@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — LinkedIn Lead System{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p class="subtitle">Overview of tracked posts and identified leads</p>
+</div>
+
+<!-- Stats row -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.total_posts }}</div>
+    <div class="stat-label">Tracked Posts</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.total_leads }}</div>
+    <div class="stat-label">Total Leads</div>
+  </div>
+  <div class="stat-card hot">
+    <div class="stat-value">{{ stats.hot }}</div>
+    <div class="stat-label">🔥 Hot Leads</div>
+  </div>
+  <div class="stat-card warm">
+    <div class="stat-value">{{ stats.warm }}</div>
+    <div class="stat-label">☀ Warm Leads</div>
+  </div>
+  <div class="stat-card cold">
+    <div class="stat-value">{{ stats.cold }}</div>
+    <div class="stat-label">❄ Cold Leads</div>
+  </div>
+</div>
+
+<!-- Lead Funnel Chart -->
+<div class="card" style="margin-top:24px">
+  <div class="card-header">Lead Funnel</div>
+  <div class="chart-container">
+    <canvas id="funnelChart"></canvas>
+  </div>
+</div>
+
+<!-- Recent posts table -->
+<div class="card" style="margin-top:24px">
+  <div class="card-header">
+    Recent Tracked Posts
+    <a href="{{ url_for('posts') }}" class="btn-sm">View All</a>
+  </div>
+  {% if posts %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Author</th>
+        <th>Snippet</th>
+        <th>Leads</th>
+        <th>Status</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for post in posts[:8] %}
+      <tr>
+        <td>{{ post.id }}</td>
+        <td>{{ post.author_name or '—' }}</td>
+        <td class="snippet">{{ (post.content_snippet or post.url)[:60] }}…</td>
+        <td><span class="badge">{{ post.leads | length }}</span></td>
+        <td><span class="status-badge status-{{ post.status }}">{{ post.status }}</span></td>
+        <td>
+          <a href="{{ url_for('leads', post_id=post.id) }}" class="btn-sm">Leads</a>
+          <a href="{{ url_for('export', post_id=post.id) }}" class="btn-sm">CSV</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No posts tracked yet. <a href="{{ url_for('posts') }}">Add your first post →</a></p>
+  </div>
+  {% endif %}
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const ctx = document.getElementById('funnelChart').getContext('2d');
+new Chart(ctx, {
+  type: 'bar',
+  data: {
+    labels: ['Hot (70-100)', 'Warm (45-69)', 'Cold (0-44)'],
+    datasets: [{
+      label: 'Leads',
+      data: [{{ stats.hot }}, {{ stats.warm }}, {{ stats.cold }}],
+      backgroundColor: ['#ef4444','#f97316','#3b82f6'],
+      borderRadius: 6,
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Posts — LinkedIn Lead System{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Tracked Posts</h1>
+  <p class="subtitle">Add LinkedIn post URLs to identify interested leads</p>
+</div>
+
+{% if demo_mode %}
+<div class="alert alert-warning">
+  ⚠ <strong>Demo Mode</strong> — LinkedIn credentials not configured.
+  Adding a URL will generate mock leads instantly.
+  <a href="{{ url_for('settings') }}">Configure credentials →</a>
+</div>
+{% endif %}
+
+<!-- Add post form -->
+<div class="card">
+  <div class="card-header">Track a New LinkedIn Post</div>
+  <form method="POST" action="{{ url_for('add_post') }}" class="add-form">
+    <div class="form-row">
+      <div class="form-group" style="flex:2">
+        <label>LinkedIn Post URL *</label>
+        <input type="url" name="url" required placeholder="https://www.linkedin.com/posts/..." class="form-control" />
+      </div>
+      <div class="form-group">
+        <label>Topic Tags (comma separated)</label>
+        <input type="text" name="tags" placeholder="startup, iim, entrepreneurship" class="form-control" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Max Reactors to scrape</label>
+        <input type="number" name="max_reactors" value="100" min="10" max="500" class="form-control" />
+      </div>
+      <div class="form-group">
+        <label>Max Commenters to scrape</label>
+        <input type="number" name="max_commenters" value="100" min="10" max="500" class="form-control" />
+      </div>
+      <div class="form-group form-submit-group">
+        <label>&nbsp;</label>
+        <button type="submit" class="btn-primary">Start Tracking</button>
+      </div>
+    </div>
+    <div class="hint">
+      ℹ Scraping runs in the background. Refresh to see updated status.
+      Credentials are read from the <code>.env</code> file.
+    </div>
+  </form>
+</div>
+
+<!-- Posts table -->
+<div class="card" style="margin-top:24px">
+  <div class="card-header">All Tracked Posts ({{ posts | length }})</div>
+  {% if posts %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>#</th><th>Author</th><th>Post Snippet</th><th>Tags</th>
+        <th>👍</th><th>💬</th><th>Leads</th><th>Status</th><th>Scraped</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for post in posts %}
+      <tr>
+        <td>{{ post.id }}</td>
+        <td>
+          <a href="{{ url_for('post_detail', post_id=post.id) }}">{{ post.author_name or '—' }}</a>
+        </td>
+        <td class="snippet">
+          <a href="{{ post.url }}" target="_blank" title="{{ post.url }}">
+            {{ (post.content_snippet or post.url)[:70] }}{% if post.content_snippet %}…{% endif %}
+          </a>
+        </td>
+        <td>
+          {% for tag in (post.topic_tags or '').split(',') %}
+            {% if tag.strip() %}<span class="tag">{{ tag.strip() }}</span>{% endif %}
+          {% endfor %}
+        </td>
+        <td>{{ post.like_count }}</td>
+        <td>{{ post.comment_count }}</td>
+        <td><span class="badge lead-count" id="lc-{{ post.id }}">{{ post.leads | length }}</span></td>
+        <td>
+          <span class="status-badge status-{{ post.status }}" id="st-{{ post.id }}">
+            {{ post.status }}
+          </span>
+        </td>
+        <td>{{ post.scraped_at.strftime('%d %b %H:%M') if post.scraped_at else '—' }}</td>
+        <td>
+          <a href="{{ url_for('leads', post_id=post.id) }}" class="btn-sm">Leads</a>
+          <a href="{{ url_for('export', post_id=post.id) }}" class="btn-sm">CSV</a>
+          <a href="{{ url_for('export', post_id=post.id, format='excel') }}" class="btn-sm">Excel</a>
+          <form method="POST" action="{{ url_for('rescrape_post', post_id=post.id) }}" style="display:inline">
+            <button class="btn-sm btn-warn" onclick="return confirm('Re-scrape?')">↻</button>
+          </form>
+          <form method="POST" action="{{ url_for('delete_post', post_id=post.id) }}" style="display:inline">
+            <button class="btn-sm btn-danger" onclick="return confirm('Delete post and ALL leads?')">✕</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No posts tracked yet. Add one above.</p>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+// Auto-poll status for posts that are still scraping
+function pollStatuses() {
+  document.querySelectorAll('.status-badge').forEach(el => {
+    const status = el.textContent.trim();
+    if (status === 'scraping' || status === 'pending') {
+      const postId = el.id.replace('st-', '');
+      fetch(`/api/posts/${postId}/status`)
+        .then(r => r.json())
+        .then(d => {
+          el.textContent = d.status;
+          el.className = `status-badge status-${d.status}`;
+          const lc = document.getElementById(`lc-${postId}`);
+          if (lc) lc.textContent = d.lead_count;
+        });
+    }
+  });
+}
+setInterval(pollStatuses, 5000);
+</script>
+{% endblock %}

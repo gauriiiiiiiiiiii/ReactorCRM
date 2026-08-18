@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}{{ lead.name }} — Lead Detail{% endblock %}
+{% block content %}
+{% set tier = 'hot' if lead.score >= 70 else ('warm' if lead.score >= 45 else 'cold') %}
+
+<div class="page-header">
+  <a href="{{ url_for('leads') }}" class="back-link">← Back to Leads</a>
+  <h1>Lead Detail</h1>
+</div>
+
+<div class="detail-grid">
+  <!-- Left: Profile card -->
+  <div class="card profile-card">
+    <div class="profile-top">
+      {% if lead.profile_image %}
+        <img src="{{ lead.profile_image }}" class="profile-img" alt="{{ lead.name }}" />
+      {% else %}
+        <div class="profile-img avatar-placeholder-lg">{{ (lead.name or '?')[0].upper() }}</div>
+      {% endif %}
+      <div>
+        <h2>{{ lead.name or 'Unknown' }}</h2>
+        <p class="lead-headline">{{ lead.headline or '—' }}</p>
+        {% if lead.location %}<p class="lead-location">📍 {{ lead.location }}</p>{% endif %}
+        <div class="lead-score-badge tier-{{ tier }}" style="margin-top:8px;display:inline-flex">
+          {{ lead.score | int }} / 100 — <b>{{ tier | upper }}</b>
+        </div>
+      </div>
+    </div>
+
+    {% if lead.profile_url %}
+    <a href="{{ lead.profile_url }}" target="_blank" class="btn-primary" style="margin-top:16px;display:block;text-align:center">
+      View LinkedIn Profile ↗
+    </a>
+    {% endif %}
+
+    <div class="detail-section">
+      <h3>Engagement</h3>
+      <dl>
+        <dt>Type</dt><dd>{{ lead.engagement_type }}</dd>
+        {% if lead.reaction_type %}<dt>Reaction</dt><dd>{{ lead.reaction_type }}</dd>{% endif %}
+        {% if lead.connection_degree %}<dt>Connection</dt><dd>{{ lead.connection_degree }}</dd>{% endif %}
+      </dl>
+    </div>
+
+    {% if lead.comment_text %}
+    <div class="detail-section">
+      <h3>Comment</h3>
+      <blockquote class="comment-block">{{ lead.comment_text }}</blockquote>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Right: Score + CRM -->
+  <div>
+    <!-- Score breakdown -->
+    <div class="card">
+      <div class="card-header">Score Breakdown ({{ lead.score }} / 100)</div>
+      <div class="score-bars">
+        {% set score_items = [
+          ('Engagement Type', breakdown.engagement_type, 40),
+          ('Reaction Bonus', breakdown.reaction_type, 8),
+          ('Connection Degree', breakdown.connection_degree, 15),
+          ('Comment Keywords', breakdown.comment_keywords, 25),
+          ('ICP Profile Match', breakdown.icp_match, 12),
+        ] %}
+        {% for label, val, max_val in score_items %}
+        <div class="score-bar-row">
+          <span class="score-bar-label">{{ label }}</span>
+          <div class="score-bar-track">
+            <div class="score-bar-fill tier-{{ tier }}" style="width:{{ ((val or 0) / max_val * 100)|int }}%"></div>
+          </div>
+          <span class="score-bar-val">{{ val or 0 }}/{{ max_val }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% if breakdown.matched_keywords %}
+      <p style="margin-top:8px;font-size:13px;color:#666">
+        Keywords matched: <b>{{ breakdown.matched_keywords | join(', ') }}</b>
+      </p>
+      {% endif %}
+      {% if breakdown.matched_icp %}
+      <p style="font-size:13px;color:#666">
+        ICP signals: <b>{{ breakdown.matched_icp | join(', ') }}</b>
+      </p>
+      {% endif %}
+    </div>
+
+    <!-- CRM update form -->
+    <div class="card" style="margin-top:20px">
+      <div class="card-header">CRM Details</div>
+      <form method="POST" action="{{ url_for('update_lead', lead_id=lead.id) }}">
+        <div class="form-group">
+          <label>Status</label>
+          <select name="status" class="form-control">
+            {% for s in ['new','contacted','qualified','converted','rejected'] %}
+            <option value="{{ s }}" {% if lead.status == s %}selected{% endif %}>
+              {{ s | capitalize }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" name="email" value="{{ lead.email or '' }}" class="form-control" placeholder="jane@company.com" />
+        </div>
+        <div class="form-group">
+          <label>Company</label>
+          <input type="text" name="company" value="{{ lead.company or '' }}" class="form-control" />
+        </div>
+        <div class="form-group">
+          <label>Industry</label>
+          <input type="text" name="industry" value="{{ lead.industry or '' }}" class="form-control" />
+        </div>
+        <div class="form-group">
+          <label>Notes</label>
+          <textarea name="notes" rows="3" class="form-control">{{ lead.notes or '' }}</textarea>
+        </div>
+        <button type="submit" class="btn-primary">Save</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
