@@ -8,7 +8,7 @@ import json
 import random
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from playwright.async_api import async_playwright, Page, BrowserContext
@@ -100,7 +100,7 @@ class LinkedInScraper:
             "like_count": 0,
             "comment_count": 0,
             "repost_count": 0,
-            "scraped_at": datetime.utcnow().isoformat(),
+            "scraped_at": datetime.now(timezone.utc).isoformat(),
         }
 
         try:
@@ -212,6 +212,10 @@ class LinkedInScraper:
                 ".reactions-modal__reaction-icon-container img"
             )
             img_el = await card.query_selector("img.presence-entity__image")
+            degree_el = await card.query_selector(
+                ".social-details-reactors-modal__reactor-degree, "
+                ".artdeco-entity-lockup__degree"
+            )
 
             profile_url = await link.get_attribute("href") if link else None
             name = (await name_el.inner_text()).strip() if name_el else None
@@ -220,12 +224,19 @@ class LinkedInScraper:
                 await reaction_el.get_attribute("alt") if reaction_el else "Like"
             )
             profile_image = await img_el.get_attribute("src") if img_el else None
+            degree = self._parse_degree(
+                await degree_el.inner_text() if degree_el else None
+            )
 
             return {
                 "name": name,
                 "headline": headline,
                 "profile_url": self._clean_profile_url(profile_url),
                 "profile_image": profile_image,
+                "connection_degree": degree,
+                # LinkedIn does not expose location in the reactions modal;
+                # populating it requires optional per-profile enrichment.
+                "location": None,
                 "engagement_type": "liked",
                 "reaction_type": reaction_type,
                 "comment_text": None,
@@ -283,18 +294,29 @@ class LinkedInScraper:
                 ".comments-comment-item__main-content"
             )
             img_el = await el.query_selector("img.ivm-view-attr__img--centered")
+            degree_el = await el.query_selector(
+                ".comments-post-meta__connection-degree, "
+                ".comments-post-meta__distance-badge"
+            )
 
             profile_url = await link.get_attribute("href") if link else None
             name = (await name_el.inner_text()).strip() if name_el else None
             headline = (await headline_el.inner_text()).strip() if headline_el else None
             comment_text = (await text_el.inner_text()).strip() if text_el else None
             profile_image = await img_el.get_attribute("src") if img_el else None
+            degree = self._parse_degree(
+                await degree_el.inner_text() if degree_el else None
+            )
 
             return {
                 "name": name,
                 "headline": headline,
                 "profile_url": self._clean_profile_url(profile_url),
                 "profile_image": profile_image,
+                "connection_degree": degree,
+                # Location is not rendered in the comment stream; requires
+                # optional per-profile enrichment to populate.
+                "location": None,
                 "engagement_type": "commented",
                 "reaction_type": None,
                 "comment_text": comment_text,
@@ -316,6 +338,14 @@ class LinkedInScraper:
         if match:
             return match.group(1)
         return None
+
+    @staticmethod
+    def _parse_degree(text: Optional[str]) -> Optional[str]:
+        """Normalize a LinkedIn connection-degree badge (e.g. '· 2nd') to '1st'/'2nd'/'3rd'."""
+        if not text:
+            return None
+        match = re.search(r"(1st|2nd|3rd)", text.strip().lower())
+        return match.group(1) if match else None
 
     @staticmethod
     def _clean_profile_url(url: Optional[str]) -> Optional[str]:
