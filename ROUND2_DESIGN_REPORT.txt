@@ -1,0 +1,438 @@
+================================================================================
+  LINKEDIN LEAD IDENTIFICATION SYSTEM — ROUND 2 DESIGN REPORT
+================================================================================
+  Author   : Gauri Agarwal
+  Date      : 19 August 2026
+  Prototype : "ReactorCRM" — Round 1 working demo
+              (Flask + SQLite + Playwright; scoring, CRM, CSV/Excel export)
+  Scope     : Written design report. Six sections, per the Round 2 brief.
+================================================================================
+
+
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Round 1 answered "given a post, who are the warm leads?" Round 2 moves the
+starting line one step earlier: the example IIM Entrepreneurship post is a
+SEED, not the input. The real system is a continuously running discovery
+loop — it learns what a "relevant post" looks like, goes and finds more of
+them, keeps refining what it looks for, and only then applies the Round 1
+scoring/enrichment/routing engine to the people who engaged.
+
+The design below is a six-stage pipeline:
+
+  keyword list -> post discovery -> keyword evolution -> volume tracking
+       -> engagement extraction -> scoring / enrichment / routing
+
+My headline recommendation (Section 6): BUILD the discovery, scoring and
+routing brain in-house because that is the defensible IP; BUY the two
+commodity, high-risk pieces — engagement extraction and profile enrichment —
+from managed vendors. A hybrid. At v0 this runs for roughly USD 70-150/month.
+
+
+================================================================================
+1. SYSTEM DESIGN
+================================================================================
+
+1.1 Architecture at a glance
+--------------------------------------------------------------------------------
+
+  +--------------------------------------------------------------------------+
+  |  (1) KEYWORD / TOPIC ENGINE          (3) EVOLUTION LOOP                   |
+  |  seed taxonomy + weights   <-------  harvest terms from high-scoring      |
+  |                                       posts, trending hashtags, human     |
+  |          |  active keyword set        review queue, outcome feedback      |
+  |          v                                                                |
+  |  (2) POST DISCOVERY  ---->  (4) VOLUME TRACKER (time-series metrics)      |
+  |  Google/SERP, hashtag &          posts/day, new vs dup, relevance dist.   |
+  |  page monitors, Apify,                                                    |
+  |  manual seed URLs                                                         |
+  |          |  relevant post URLs                                           |
+  |          v                                                                |
+  |  (5) ENGAGEMENT EXTRACTION  ---->  reactors / commenters / reposters     |
+  |          |                                                                |
+  |          v                                                                |
+  |  (6) SCORING (Round 1) -> ENRICHMENT (gated) -> ROUTING (Hot/Warm/Cold)  |
+  +--------------------------------------------------------------------------+
+
+Round 1 built stages 5 and 6. Round 2 adds the front half (1-4) and the
+enrichment/routing decisioning that sits on top of scoring.
+
+
+1.2 Step 1 — How the keyword list gets BUILT
+--------------------------------------------------------------------------------
+The seed post is analysed, not just read:
+
+  a. Text extraction: pull the post body, the author's headline/industry,
+     and all hashtags (#startupindia, #entrepreneurship, ...).
+  b. Term extraction: tokenise -> drop stopwords -> pull noun phrases with an
+     NLP library (spaCy), plus raw hashtags and named entities (IIM, cohort).
+  c. Map into a weighted taxonomy with four buckets, because different word
+     types mean different things:
+
+     Bucket            Example terms                            Role
+     ----------------  ---------------------------------------  --------------
+     Programme type    accelerator, incubator, E-cell, cohort,  core "is this
+                       demo day, bootcamp, fellowship            the right kind
+                                                                 of post?"
+     Audience / ICP    founder, aspiring entrepreneur, MBA,     matches Round 1
+                       student, startup                          ICP scoring
+     Action / intent   applications open, apply now, register,  signals a live
+                       last date, limited seats                  opportunity
+     Domain / vertical fintech, SaaS, agritech, sustainability  optional filter
+
+  d. Each term gets a relevance weight (0-1). A post's relevance score is the
+     weighted sum of matched terms; a post clears discovery only above a
+     threshold. This mirrors the Round 1 lead scorer, one level up: instead of
+     scoring people, we now score POSTS.
+
+Cold start is a real seed post, so the very first keyword set is concrete, not
+guessed. From day one the taxonomy has ~30-40 terms drawn from the example.
+
+
+1.3 Step 2 — Using the list to FIND more posts (ongoing, not one-shot)
+--------------------------------------------------------------------------------
+LinkedIn has no public "search posts" API (Section 2), so discovery is layered,
+cheapest-and-safest first:
+
+  1. Search-engine discovery (primary, lowest risk):
+     query a SERP API (Google Programmable Search / SerpAPI) with
+       site:linkedin.com/posts "<keyword>" OR "<hashtag>"
+     This searches Google's index, not LinkedIn, and returns public post URLs.
+     Compliant-leaning, cheap, but coverage lags (only indexed posts).
+
+  2. Hashtag & entity monitoring (session automation):
+     periodically visit hashtag feeds and a watch-list of creators/company
+     pages known to post relevant content; collect recent post URLs. Higher
+     coverage, higher risk (touches LinkedIn directly, Section 4).
+
+  3. Managed discovery (Apify LinkedIn hashtag/search actors):
+     outsource 1-2 to a vendor that absorbs the scraping risk.
+
+  4. Manual seeding: the operator can always paste a URL (the Round 1 flow).
+     Every manual add also feeds the keyword learner.
+
+Discovery runs on a schedule (e.g. hourly/daily via a task queue), deduplicates
+against already-seen post IDs, and writes each hit as a "discovered post" with
+its source, relevance score, and timestamp. It never stops — this is a standing
+crawl, not a search you run once.
+
+
+1.4 Step 3 — How the keyword list EVOLVES
+--------------------------------------------------------------------------------
+Five feedback mechanisms, three automatic and two human-gated:
+
+  * Term harvesting (auto): from every post that scores high, extract candidate
+    terms via TF-IDF against the running corpus and hashtag co-occurrence
+    ("posts with #accelerator also carry #cohort"). New candidates are proposed.
+  * Semantic expansion (auto): embed existing keywords and pull nearest
+    neighbours ("accelerator" -> "incubator", "venture studio"). Catches
+    synonyms the seed never contained.
+  * Trend detection (auto): track each hashtag's frequency over time; a term
+    rising sharply in the space is auto-proposed for inclusion.
+  * Human review queue (gated): proposed terms don't go live automatically.
+    They land in a review list; the operator approves, rejects, or sets a
+    weight. This prevents drift and keyword-spam poisoning.
+  * Outcome feedback (gated + auto): the strongest signal. Terms that appear in
+    posts which ultimately produced CONVERTED leads get up-weighted; terms that
+    only ever surface noise get down-weighted and eventually retired. This
+    closes the loop between "what we search for" and "what actually converts."
+
+Keyword sets are VERSIONED (v1, v2, ...) with the metrics that justified each
+change, so a bad expansion can be rolled back.
+
+
+1.5 Step 4 — Tracking discovery VOLUME
+--------------------------------------------------------------------------------
+Discovery is stored as time-series so trends, not just totals, are visible.
+Tracked metrics:
+
+  * posts_discovered — total, and per day / per week
+  * new vs. duplicate ratio (dedup rate)
+  * relevance-score distribution (are we finding strong or marginal posts?)
+  * leads-per-post and converted-leads-per-keyword
+  * discovery volume broken down by source (SERP / hashtag / Apify / manual)
+
+Reading the trend line:
+  * RISING count -> the space is active, or keyword expansion is working;
+    validate that relevance quality isn't dropping as quantity rises.
+  * FALLING count -> one of: the topic is cooling, keywords have gone stale,
+    LinkedIn changed markup / rate-limited us, or the SERP index went cold.
+    A sustained drop auto-raises an alert and a "refresh keywords" task.
+
+Implementation note: this extends the Round 1 TrackedPost table with
+discovery_source, relevance_score, and discovered_at, plus a daily snapshot
+table for the trend lines.
+
+
+1.6 Step 5 — Engagement extraction
+--------------------------------------------------------------------------------
+Unchanged in concept from Round 1: for each discovered post, collect everyone
+who liked/reacted, commented, or reposted — name, headline, profile URL,
+reaction type, comment text, and connection degree. In Round 2 this stage is
+explicitly a BUY candidate (managed vendor) rather than self-run browser
+automation, for the risk reasons in Sections 2 and 4.
+
+
+1.7 Step 6 — Scoring, enrichment, routing
+--------------------------------------------------------------------------------
+Scoring is the Round 1 engine, reused as-is (0-100, weighted):
+
+  comment 40 / repost 25 / like 10  + reaction-quality 0-8
+  + connection degree 5-15  + comment-intent keywords 0-25  + ICP match 0-12
+  Tiers: Hot >=70, Warm 45-69, Cold <45.
+
+ENRICHMENT DECISION — what is worth enriching, and what isn't:
+Enrichment (finding email, verified company, seniority via a data vendor) COSTS
+money per profile, so it is gated on score:
+
+  * Hot leads      -> enrich immediately (email + company + verification).
+  * Warm leads     -> enrich in a nightly batch (cheaper, less urgent).
+  * Cold leads     -> NOT enriched. Stored with score + provenance, given a
+                      TTL, and archived. They are re-scored automatically if the
+                      keyword weights that judged their post change materially —
+                      so a cold lead can be promoted later without re-scraping.
+
+This gate is the main cost-control lever: we pay to enrich the ~15-25% of leads
+most likely to convert, not the long tail.
+
+ROUTING:
+  * Hot  -> push to CRM (HubSpot/Salesforce) + Slack alert + outreach sequence.
+  * Warm -> nurture sequence / weekly digest for manual review.
+  * Cold -> archive; suppress from outreach; retain only per data-policy (S.4).
+
+
+================================================================================
+2. LINKEDIN API LIMITATIONS
+================================================================================
+
+2.1 What the official API DOES allow
+--------------------------------------------------------------------------------
+  * Sign In with LinkedIn (OpenID Connect): basic profile of the AUTHENTICATED
+    user only.
+  * Share on LinkedIn / Posts API: publish content as an authorised member or
+    an administered company Page.
+  * Marketing / Community Management APIs: engagement analytics for YOUR OWN
+    Pages and YOUR OWN Sponsored Content — likers/commenters on posts you own.
+  * Member Data Portability API: a member's own data export, with consent.
+
+2.2 What it does NOT allow
+--------------------------------------------------------------------------------
+  * No endpoint to list the likers/commenters of an ARBITRARY third-party post.
+  * No public post/people search API.
+  * No bulk profile lookup for people you don't have a relationship with.
+  * Partner APIs are gated behind application, approval, and use-case review;
+    "scrape competitors' post engagement" is not an approved use case.
+
+2.3 Why the official route doesn't fit THIS problem
+--------------------------------------------------------------------------------
+The whole value proposition is finding people who engaged with posts we do NOT
+own (the IIM programme post, other accelerators' posts, etc.). The official API
+only exposes engagement on assets you administer. So for the core task, the
+compliant API simply has no endpoint that returns the data — it's not a rate
+limit, it's a capability gap by design.
+
+2.4 The practical workaround, and what it costs you
+--------------------------------------------------------------------------------
+Workaround: authenticated browser automation using a real member session
+(Playwright, as in the prototype), or a managed vendor that does the same
+behind an API. What you pay for it:
+
+  * Risk: violates LinkedIn's User Agreement (Section 8.2, "don'ts"); the
+    account can be throttled, checkpoint-locked, or banned (Section 4).
+  * Reliability: LinkedIn's DOM/class names change without notice; selectors
+    break; CAPTCHAs and rate limits interrupt runs. It is inherently brittle.
+  * Maintenance: someone must monitor for markup changes, rotate sessions,
+    tune delays, and handle checkpoints — an ongoing cost, not a one-off build.
+  * Enrichment-vendor caution: the enrichment market is itself legally exposed.
+    Proxycurl, a popular enrichment API, faced LinkedIn legal action and wound
+    down — a direct reminder that "buy the data" does not remove the risk, it
+    relocates it. Prefer vendors with a clear compliance posture (e.g. People
+    Data Labs, Coresignal, Bright Data) and treat any single source as
+    replaceable.
+
+
+================================================================================
+3. TOOLS & PLATFORMS COMPARISON
+================================================================================
+(Prices are approximate, 2025-26, and change often — treat as order-of-magnitude.)
+
+  Tool / Path        ~Cost                What you get
+  -----------------  -------------------  -------------------------------------
+  PhantomBuster      ~$69-$199/mo         Ready-made "Phantoms": post likers /
+  (PAID)                                  commenters export, uses your session.
+                                          Fast to stand up; per-day extraction
+                                          caps; you still own account risk.
+  Apify              ~$49/mo + usage      Cloud "actors" for LinkedIn post/
+  (PAID, usage)      (pay per result)     hashtag/engagement scraping. Absorbs
+                                          infra + some scraping risk; good for
+                                          the discovery + extraction stages.
+  Bright Data        Usage-based,         LinkedIn datasets / scraping browser;
+  (PAID, usage)      ~$0.001-$0.01/rec    proxy scale + compliance tooling.
+                                          Best when volume is high.
+  Clay.com           ~$149-$800/mo        Orchestration: pull engagement, enrich,
+  (PAID)                                  AI-personalise, push to CRM. A near-
+                                          complete "buy" of stages 5-6.
+  Apollo.io          Free tier; paid      Enrichment + verified emails + light
+  (PAID/FREEMIUM)    ~$49-$99/user/mo     CRM. Good enrichment layer for gated
+                                          Hot/Warm leads.
+  LinkedIn Sales     ~$99/user/mo         Official advanced search + lead lists.
+  Navigator (PAID)                        Compliant, but no bulk engagement
+                                          export; manual.
+  Dux-Soup           ~$15-$55/mo          Browser-extension automation that runs
+  (PAID, low-cost)                        as you browse (Dux-Soup model).
+  Self-hosted        Infra only           Full control, zero licence cost, and
+  Playwright         (~$5-$20/mo VPS)     ALL the risk + maintenance on you.
+  (FREE / OSS)                            This is the Round 1 prototype.
+
+Pick for v0:  Self-hosted Playwright for discovery + scoring (the prototype),
+              with Apify for the risky extraction step and Apollo's free/low
+              tier for enrichment. Cheap, controllable, and it isolates the
+              account-risk piece behind a vendor.
+Graduate to:  At scale, move extraction fully to Apify/Bright Data (they carry
+              proxy + compliance load), keep enrichment on Apollo or People Data
+              Labs, and reserve Clay if you want turnkey orchestration rather
+              than maintaining your own. Keep the keyword/discovery/scoring
+              brain in-house throughout — that's the differentiator.
+
+
+================================================================================
+4. COMPLIANCE & RISK
+================================================================================
+
+4.1 What LinkedIn's Terms actually say
+--------------------------------------------------------------------------------
+The LinkedIn User Agreement and its "Dos and Don'ts" (Section 8.2) explicitly
+prohibit: using bots or automated methods to access the Service, scraping or
+copying profiles/data without consent, and creating/using software that
+extracts data. So automated collection of third-party engagement is a Terms
+violation — regardless of whether the data is "public."
+
+Legal backdrop: hiQ Labs v. LinkedIn established that scraping PUBLIC data is
+not by itself a CFAA (computer-fraud) violation in the US, BUT LinkedIn later
+prevailed on BREACH-OF-CONTRACT grounds (violating the User Agreement). Net:
+scraping public pages may avoid criminal-hacking liability yet still breach
+the contract you accepted — and LinkedIn actively enforces via account action
+and litigation (e.g. actions against data vendors, Section 2.4).
+
+4.2 If the account gets restricted — reducing and catching it early
+--------------------------------------------------------------------------------
+Failure modes: soft rate-limit -> security checkpoint (CAPTCHA/phone) ->
+temporary restriction -> permanent ban.
+
+  Reduce risk:
+    * Use a dedicated, warmed account — never a real primary identity.
+    * Human-speed randomised delays (the prototype does 2-5s); daily volume
+      caps; run during business hours in the account's timezone.
+    * Persist a genuine session (cookies) instead of repeated password logins.
+    * Push the highest-risk step to a managed vendor with proxy rotation.
+    * Prefer SERP-based discovery (queries Google, not LinkedIn) where possible.
+  Catch it early:
+    * Health checks after each run (did we land on /feed or a checkpoint?).
+    * Alert on: sudden zero-yield runs, CAPTCHA HTML detected, HTTP 999,
+      or a discovery-volume cliff (ties into Section 1.5 monitoring).
+    * Circuit-breaker: auto-pause all automation on the first checkpoint and
+      notify a human, rather than hammering into a ban.
+
+4.3 Data-privacy obligations for stored personal data
+--------------------------------------------------------------------------------
+Scraped profiles ARE personal data, so storage triggers real obligations:
+
+  * India DPDP Act, 2023: needs a lawful basis; consent is the default and
+    "publicly available" is a narrower exemption than people assume for
+    commercial profiling. Requires purpose limitation, data-principal rights
+    (access/erasure), breach notification, and a Consent/Grievance path.
+  * EU/UK GDPR (if any EU/UK data subjects): needs an Art. 6 lawful basis
+    (legitimate interest, documented via an LIA) AND — because data is collected
+    without the person's knowledge — Art. 14 notice, plus rights to access,
+    object, and erase. Special care for automated profiling.
+  Practical controls to build in:
+    * Store only what's needed (data minimisation); set retention TTLs
+      (the Cold-lead archive in S.1.7).
+    * Maintain provenance (which post, when, which keyword set) per lead.
+    * Provide opt-out / deletion on request and honour it across exports.
+    * Never store passwords of scraped users; secure the operating account's
+      credentials (the prototype's .env / settings flow must be hardened).
+
+
+================================================================================
+5. HOW OTHER COMPANIES SOLVE THIS
+================================================================================
+
+Real players and how my design compares:
+
+  * PhantomBuster (session automation): sells the exact extraction step as
+    hosted "Phantoms" driven by the user's own session. My design mirrors this
+    for stage 5 — but I put a keyword-driven DISCOVERY engine and an evolving
+    taxonomy IN FRONT of it, which PhantomBuster leaves to the user.
+  * Clay.com (modern full-stack): pull engagement -> enrich -> AI-personalise
+    -> push to CRM, with a marketplace of data providers. My routing/enrichment
+    design is deliberately Clay-shaped. Difference: Clay is a general canvas;
+    mine is a focused, self-learning niche crawler for one vertical
+    (entrepreneurship/founder programmes).
+  * Dux-Soup (browser extension): captures data as the user naturally browses,
+    which dodges some bot detection. I'd borrow the "ride real human activity"
+    idea as a lower-risk extraction mode.
+  * Apollo.io / People Data Labs (enrichment): I reuse them wholesale for the
+    enrichment layer rather than reinventing a profile database.
+
+What I'd BORROW: Clay's enrich+route orchestration, Dux-Soup's low-detection
+capture pattern, PhantomBuster's per-account rate discipline.
+What I'd do DIFFERENTLY: none of these OWN a topical discovery + keyword-
+evolution loop tuned to a vertical. That closed loop — find posts, learn from
+what converts, refine what we search for — is my system's defensible core, and
+it's what turns "a scraper" into "a lead-discovery product."
+
+
+================================================================================
+6. COST TO BUILD vs. BUY
+================================================================================
+
+6.1 Low-volume monthly cost (a few tracked posts/week)
+--------------------------------------------------------------------------------
+  Item                              ~Monthly (USD)
+  --------------------------------  --------------
+  VPS / hosting (self-hosted app)   $5 - $20
+  SERP API (discovery queries)      $0 - $50   (free tiers cover low volume)
+  Apify (extraction, low usage)     $0 - $49
+  Enrichment (Apollo free/low tier) $0 - $49
+  ----------------------------------------------
+  TOTAL (v0)                        ~$10 - $150/mo, realistically ~$70-100.
+
+Pure Round 1 prototype (Playwright only, no vendors) is near-zero cash but
+carries the full account-ban and maintenance risk — a hidden cost paid in time.
+
+6.2 What changes at real scale
+--------------------------------------------------------------------------------
+  Grows ~LINEARLY with volume:
+    * Extraction (per-result Apify/Bright Data charges).
+    * Enrichment (per-profile — but the S.1.7 score gate keeps this sub-linear
+      vs. raw lead count, since only Hot/Warm are enriched).
+    * SERP query costs.
+  Grows SUB-LINEARLY / mostly FIXED:
+    * The discovery + keyword + scoring engine (compute is cheap; the logic is
+      built once).
+    * Engineering maintenance (steps up in chunks — a data engineer at some
+      threshold — not smoothly).
+  New at scale: PostgreSQL + a task queue (Celery/Redis) replacing SQLite;
+  proxy/compliance tooling; possibly a CRM licence.
+
+6.3 Recommendation: HYBRID (build the brain, buy the risky commodities)
+--------------------------------------------------------------------------------
+  * BUILD in-house: keyword engine, discovery orchestration, keyword evolution,
+    volume tracking, scoring, enrichment-gating and routing. This is the IP,
+    it's cheap to run, and no vendor sells exactly this closed loop.
+  * BUY from vendors: engagement EXTRACTION (Apify/Bright Data) and profile
+    ENRICHMENT (Apollo/People Data Labs). These are commodity, high-legal-risk,
+    high-maintenance functions — let a specialist absorb the proxies, the
+    compliance surface, and the markup-change churn.
+  * DON'T buy a monolith (e.g. Clay for everything) at v0: it's more expensive
+    and it hides the discovery/scoring logic that is the whole point of the
+    exercise.
+
+Rationale in one line: own what differentiates you and is cheap to run; rent
+what is undifferentiated, expensive to maintain, and legally hot.
+
+
+================================================================================
+  END OF REPORT
+================================================================================
