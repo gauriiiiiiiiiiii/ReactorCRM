@@ -1,0 +1,25 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Database (regenerate with: python seed_demo.py)
+instance/
+*.db
+*.sqlite3
+
+# Generated exports
+exports/*.csv
+exports/*.xlsx
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

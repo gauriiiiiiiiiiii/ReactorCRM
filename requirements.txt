@@ -1,0 +1,11 @@
+flask==3.0.3
+playwright==1.44.0
+beautifulsoup4==4.12.3
+requests==2.32.3
+pandas==2.2.2
+openpyxl==3.1.2
+python-dotenv==1.0.1
+apscheduler==3.10.4
+flask-sqlalchemy==3.1.1
+sqlalchemy==2.0.31
+Werkzeug==3.0.3
