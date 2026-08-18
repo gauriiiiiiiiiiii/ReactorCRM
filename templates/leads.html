@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Leads — LinkedIn Lead System{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Leads{% if post_id %} — Post #{{ post_id }}{% endif %}</h1>
+  <p class="subtitle">Sorted by lead score (highest first)</p>
+</div>
+
+<!-- Filters -->
+<div class="card filters-card">
+  <form method="GET" action="{{ url_for('leads') }}" class="filters-form">
+    {% if post_id %}<input type="hidden" name="post_id" value="{{ post_id }}" />{% endif %}
+    <div class="form-row">
+      <div class="form-group">
+        <label>Post</label>
+        <select name="post_id" class="form-control">
+          <option value="">All Posts</option>
+          {% for p in posts %}
+          <option value="{{ p.id }}" {% if post_id == p.id %}selected{% endif %}>
+            #{{ p.id }} — {{ p.author_name or p.url[:40] }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tier</label>
+        <select name="tier" class="form-control">
+          <option value="">All</option>
+          <option value="hot" {% if tier_filter=='hot' %}selected{% endif %}>🔥 Hot (70+)</option>
+          <option value="warm" {% if tier_filter=='warm' %}selected{% endif %}>☀ Warm (45-69)</option>
+          <option value="cold" {% if tier_filter=='cold' %}selected{% endif %}>❄ Cold (&lt;45)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Status</label>
+        <select name="status" class="form-control">
+          <option value="">All</option>
+          <option value="new" {% if status_filter=='new' %}selected{% endif %}>New</option>
+          <option value="contacted" {% if status_filter=='contacted' %}selected{% endif %}>Contacted</option>
+          <option value="qualified" {% if status_filter=='qualified' %}selected{% endif %}>Qualified</option>
+          <option value="converted" {% if status_filter=='converted' %}selected{% endif %}>Converted</option>
+          <option value="rejected" {% if status_filter=='rejected' %}selected{% endif %}>Rejected</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Search</label>
+        <input type="text" name="q" value="{{ search }}" placeholder="Name, headline, company…" class="form-control" />
+      </div>
+      <div class="form-group form-submit-group">
+        <label>&nbsp;</label>
+        <button type="submit" class="btn-primary">Filter</button>
+        <a href="{{ url_for('leads') }}" class="btn-sm">Clear</a>
+      </div>
+    </div>
+  </form>
+</div>
+
+<!-- Export bar -->
+<div class="export-bar">
+  <span>{{ pagination.total }} leads found</span>
+  <div>
+    <a href="{{ url_for('export', post_id=post_id or '', format='csv') }}" class="btn-sm">Export CSV</a>
+    <a href="{{ url_for('export', post_id=post_id or '', format='excel') }}" class="btn-sm">Export Excel</a>
+  </div>
+</div>
+
+<!-- Leads grid -->
+{% if leads %}
+<div class="leads-grid">
+  {% for lead in leads %}
+  {% set tier = 'hot' if lead.score >= 70 else ('warm' if lead.score >= 45 else 'cold') %}
+  <div class="lead-card tier-{{ tier }}">
+    <div class="lead-card-top">
+      <div class="lead-avatar">
+        {% if lead.profile_image %}
+          <img src="{{ lead.profile_image }}" alt="{{ lead.name }}" />
+        {% else %}
+          <div class="avatar-placeholder">{{ (lead.name or '?')[0].upper() }}</div>
+        {% endif %}
+      </div>
+      <div class="lead-info">
+        <div class="lead-name">
+          {% if lead.profile_url %}
+            <a href="{{ lead.profile_url }}" target="_blank">{{ lead.name or 'Unknown' }}</a>
+          {% else %}
+            {{ lead.name or 'Unknown' }}
+          {% endif %}
+        </div>
+        <div class="lead-headline">{{ lead.headline or '—' }}</div>
+      </div>
+      <div class="lead-score-badge tier-{{ tier }}">
+        {{ lead.score | int }}
+        <div class="score-label">{{ tier | upper }}</div>
+      </div>
+    </div>
+
+    <div class="lead-meta">
+      <span class="engagement-badge eng-{{ lead.engagement_type }}">
+        {% if lead.engagement_type == 'commented' %}💬 Commented
+        {% elif lead.engagement_type == 'reposted' %}🔁 Reposted
+        {% else %}👍 {{ lead.reaction_type or 'Liked' }}
+        {% endif %}
+      </span>
+      <span class="status-badge status-{{ lead.status }}">{{ lead.status }}</span>
+    </div>
+
+    {% if lead.comment_text %}
+    <div class="lead-comment">"{{ lead.comment_text[:100] }}{% if lead.comment_text|length > 100 %}…{% endif %}"</div>
+    {% endif %}
+
+    <div class="lead-actions">
+      <a href="{{ url_for('lead_detail', lead_id=lead.id) }}" class="btn-sm">View</a>
+      {% if lead.profile_url %}
+      <a href="{{ lead.profile_url }}" target="_blank" class="btn-sm">LinkedIn ↗</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Pagination -->
+<div class="pagination">
+  {% if pagination.has_prev %}
+  <a href="{{ url_for('leads', page=pagination.prev_num, post_id=post_id or '', tier=tier_filter, status=status_filter, q=search) }}" class="btn-sm">← Prev</a>
+  {% endif %}
+  <span>Page {{ pagination.page }} / {{ pagination.pages }}</span>
+  {% if pagination.has_next %}
+  <a href="{{ url_for('leads', page=pagination.next_num, post_id=post_id or '', tier=tier_filter, status=status_filter, q=search) }}" class="btn-sm">Next →</a>
+  {% endif %}
+</div>
+
+{% else %}
+<div class="empty-state">
+  <p>No leads found. <a href="{{ url_for('posts') }}">Track a post</a> to start identifying leads.</p>
+</div>
+{% endif %}
+{% endblock %}
