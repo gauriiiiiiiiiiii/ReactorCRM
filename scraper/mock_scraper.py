@@ -56,7 +56,9 @@ DEGREES = ["1st", "2nd", "2nd", "2nd", "3rd", "3rd"]
 
 
 def mock_post_metadata(url: str) -> dict:
-    post_id = _extract_post_id(url) or "mock123"
+    # Derive a stable, URL-unique id so the TrackedPost.post_id unique
+    # constraint is never violated when the URL has no embedded activity id.
+    post_id = _extract_post_id(url) or f"mock{abs(hash(url)) % (10 ** 12)}"
     return {
         "url": url,
         "post_id": post_id,
